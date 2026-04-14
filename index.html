@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>USD Ladder Monitor v2</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <style>
+    body { background: #0f172a; color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+    .indicator-up { color: #4ade80; }
+    .indicator-down { color: #f87171; }
+    .indicator-neutral { color: #94a3b8; }
+    .status-green { background: #166534; color: #4ade80; }
+    .status-yellow { background: #854d0e; color: #fbbf24; }
+    .status-red { background: #991b1b; color: #f87171; }
+    .status-blue { background: #1e3a5f; color: #60a5fa; }
+    .step-active { background: #1d4ed8; border-color: #3b82f6; }
+    .step-done { background: #166534; border-color: #4ade80; }
+    .step-pending { background: #334155; border-color: #475569; }
+    .sparkline-container { height: 40px; }
+    canvas { max-height: 100%; }
+    .modal-overlay { background: rgba(0,0,0,0.6); }
+    input[type="text"], input[type="number"], input[type="date"], select {
+      background: #0f172a; border: 1px solid #475569; color: #e2e8f0; border-radius: 6px; padding: 4px 8px;
+    }
+    .btn-primary { background: #2563eb; color: white; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: #475569; color: white; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+    .btn-secondary:hover { background: #64748b; }
+    .btn-danger { background: #dc2626; color: white; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+    .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+    .tab-inactive { color: #94a3b8; cursor: pointer; }
+    .tab-inactive:hover { color: #e2e8f0; }
+
+    /* Bucket colors */
+    .bucket-a { border-left: 4px solid #f59e0b; }
+    .bucket-b { border-left: 4px solid #3b82f6; }
+    .bucket-c { border-left: 4px solid #10b981; }
+    .bucket-a-bg { background: rgba(245,158,11,0.1); }
+    .bucket-b-bg { background: rgba(59,130,246,0.1); }
+    .bucket-c-bg { background: rgba(16,185,129,0.1); }
+
+    /* Flow diagram */
+    .smap-node { border-radius: 10px; padding: 10px 14px; transition: box-shadow 0.3s; }
+    .smap-node.active { box-shadow: 0 0 16px rgba(59,130,246,0.35); }
+    .smap-badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: 600; }
+    .smap-flow-line { width: 2px; background: #334155; margin: 0 auto; }
+    .smap-flow-line.active { background: #3b82f6; }
+    .smap-arrow { color: #475569; font-size: 18px; line-height: 1; }
+    .smap-arrow.active { color: #3b82f6; }
+    .phase-arc-segment { transition: opacity 0.3s; }
+    .phase-arc-segment.dimmed { opacity: 0.25; }
+
+    /* Intervention alert banner */
+    .alert-banner { background: linear-gradient(90deg, #991b1b, #b91c1c); border-radius: 8px; padding: 8px 16px; animation: pulse-border 2s infinite; }
+    @keyframes pulse-border { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); } }
+    .warn-banner { background: linear-gradient(90deg, #854d0e, #a16207); border-radius: 8px; padding: 8px 16px; }
+
+    /* Progress bar */
+    .progress-track { background: #334155; border-radius: 9999px; height: 8px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 9999px; transition: width 0.3s; }
+
+    /* Tooltip overlay */
+    .has-tip { position: relative; }
+    .has-tip::after {
+      content: '?';
+      position: absolute; top: 6px; right: 8px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #334155; color: #94a3b8; font-size: 10px;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0.5; transition: opacity 0.2s; cursor: help; z-index: 5;
+      line-height: 16px; text-align: center;
+    }
+    .has-tip:hover::after { opacity: 1; background: #3b82f6; color: white; }
+    .tip-panel {
+      display: none; position: fixed; z-index: 100;
+      background: #1e293b; border: 1px solid #475569; border-radius: 10px;
+      padding: 16px 20px; max-width: 420px; min-width: 280px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      pointer-events: auto;
+    }
+    .tip-panel.visible { display: block; }
+    .tip-panel h4 { color: #60a5fa; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+    .tip-panel p { color: #cbd5e1; font-size: 11px; line-height: 1.6; margin-bottom: 6px; }
+    .tip-panel .tip-label { color: #94a3b8; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 8px; margin-bottom: 2px; }
+    .tip-panel ul { padding-left: 14px; margin: 4px 0; }
+    .tip-panel li { color: #cbd5e1; font-size: 11px; line-height: 1.5; }
+    .tip-panel .tip-action { background: #0f172a; border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+    .tip-panel .tip-action span { font-size: 11px; }
+    .tip-close { position: absolute; top: 8px; right: 10px; color: #64748b; cursor: pointer; font-size: 14px; }
+    .tip-close:hover { color: white; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- Header -->
+  <header class="border-b border-slate-700 px-6 py-3 flex items-center justify-between">
+    <div>
+      <h1 class="text-xl font-bold text-white">USD Ladder Monitor <span class="text-sm font-normal text-slate-400">v2</span></h1>
+      <p class="text-xs text-slate-500">3-Bucket Portfolio Strategy Dashboard</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="lastUpdate" class="text-xs text-slate-500"></span>
+      <span id="nextUpdate" class="text-xs text-slate-600 hidden"></span>
+      <button onclick="fetchAllData()" class="btn-primary text-sm flex items-center gap-2">
+        <span id="fetchSpinner" class="hidden animate-spin">&#8635;</span>
+        Update
+      </button>
+      <button onclick="toggleSettings()" class="btn-secondary text-sm">Settings</button>
+    </div>
+  </header>
+
+  <!-- Alert Banner (intervention / twist) -->
+  <div id="alertBanner" class="hidden mx-6 mt-4"></div>
+
+  <!-- Settings Panel -->
+  <div id="settingsPanel" class="hidden border-b border-slate-700 px-6 py-4 bg-slate-800/50">
+    <div class="max-w-5xl grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">FRED API Key (<a href="https://fred.stlouisfed.org/docs/api/api_key.html" target="_blank" class="text-blue-400 underline">get free</a>)</label>
+        <input type="text" id="fredApiKey" class="w-full text-sm" placeholder="API key" oninput="saveSettings()">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Ladder Base Rate (USD/JPY)</label>
+        <input type="number" id="ladderBaseRate" class="w-full text-sm" step="0.1" placeholder="159.6" oninput="saveSettings(); renderAll();">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Monthly DCA Budget (%)</label>
+        <input type="number" id="dcaBudget" class="w-full text-sm" step="1" value="5" oninput="saveSettings()">
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">Auto Refresh</label>
+        <select id="autoRefresh" class="w-full text-sm" onchange="saveSettings(); setupAutoRefresh();">
+          <option value="0">Off</option>
+          <option value="1">1 hour</option>
+          <option value="3">3 hours</option>
+          <option value="6">6 hours</option>
+          <option value="12">12 hours</option>
+        </select>
+      </div>
+    </div>
+    <div class="mt-3 flex gap-2">
+      <button onclick="exportData()" class="btn-secondary text-xs">Export CSV</button>
+      <button onclick="document.getElementById('importFile').click()" class="btn-secondary text-xs">Import CSV</button>
+      <input type="file" id="importFile" accept=".csv" class="hidden" onchange="importData(event)">
+      <button onclick="if(confirm('Reset all data?')) clearAllData()" class="btn-danger text-xs">Reset</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <main class="p-4 max-w-[1600px] mx-auto space-y-5">
+
+    <!-- Row 0: 3-Bucket Overview -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">3-Bucket Overview</h2>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <!-- Bucket A -->
+        <div class="card p-4 bucket-a has-tip" data-tip="bucketA">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-bold text-amber-400">A: FX Trade</div>
+            <div id="bucketABadge" class="smap-badge bg-amber-900 text-amber-300">--</div>
+          </div>
+          <div class="text-xs text-slate-400 mb-2">USD/JPY短期売買 | 週〜日次</div>
+          <div id="bucketAContent" class="space-y-2"></div>
+        </div>
+        <!-- Bucket B -->
+        <div class="card p-4 bucket-b has-tip" data-tip="bucketB">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-bold text-blue-400">B: Multi-Asset Core</div>
+            <div id="bucketBBadge" class="smap-badge bg-blue-900 text-blue-300">--</div>
+          </div>
+          <div class="text-xs text-slate-400 mb-2">はしご + マルチアセット | 月〜四半期</div>
+          <div id="bucketBContent" class="space-y-2"></div>
+        </div>
+        <!-- Bucket C -->
+        <div class="card p-4 bucket-c has-tip" data-tip="bucketC">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-bold text-emerald-400">C: Floor</div>
+            <div class="smap-badge bg-emerald-900 text-emerald-300">20% FIXED</div>
+          </div>
+          <div class="text-xs text-slate-400 mb-2">円MMF + 現金 | 絶対不変</div>
+          <div class="space-y-2">
+            <div class="flex justify-between text-xs"><span class="text-slate-400">円MMF</span><span>10%</span></div>
+            <div class="flex justify-between text-xs"><span class="text-slate-400">円現金</span><span>10%</span></div>
+            <div class="mt-2 p-2 rounded bg-emerald-900/20 text-xs text-emerald-400">A/Bからの流入禁止。絶対に触らない。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 1: Macro Indicators -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">Macro Indicators</h2>
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3" id="macroCards"></div>
+    </section>
+
+    <!-- Row 2: Strategy Map -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">Strategy Map</h2>
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <!-- Left: Indicator Flow -->
+        <div class="card p-5 lg:col-span-5 has-tip" data-tip="indicatorFlow">
+          <h3 class="text-xs font-semibold text-slate-500 mb-3 uppercase">Indicator Flow</h3>
+          <div id="strategyFlow" class="flex flex-col items-center gap-0"></div>
+        </div>
+        <!-- Center: Phase Arc -->
+        <div class="card p-5 lg:col-span-3 flex flex-col items-center has-tip" data-tip="rateCycle">
+          <h3 class="text-xs font-semibold text-slate-500 mb-3 uppercase">Rate Cycle</h3>
+          <div class="flex-1 flex items-center justify-center w-full">
+            <svg id="phaseArc" viewBox="0 0 320 220" class="w-full max-w-[320px]"></svg>
+          </div>
+          <div id="phaseArcLabel" class="text-center mt-2"></div>
+          <div id="phaseArcAction" class="mt-2 p-3 rounded-lg bg-slate-800 text-sm text-center w-full">--</div>
+        </div>
+        <!-- Right: Ladder Gauge -->
+        <div class="card p-5 lg:col-span-4 has-tip" data-tip="ladderGaugeHelp">
+          <h3 class="text-xs font-semibold text-slate-500 mb-3 uppercase">USD/JPY Ladder (Relative)</h3>
+          <div id="ladderGauge" class="mt-4"></div>
+          <div id="ladderGaugeInfo" class="mt-8 space-y-2"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 3: Ladder + Rule Engine -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- Ladder Status -->
+      <div class="card p-5 lg:col-span-1 has-tip" data-tip="ladderStatus">
+        <h2 class="text-sm font-semibold text-slate-300 mb-4">Ladder Status (Bucket B)</h2>
+        <div class="text-center mb-4 p-3 rounded-lg bg-slate-800/50">
+          <div class="text-[10px] text-slate-500 uppercase tracking-wider">Current Phase</div>
+          <div id="phaseLabel" class="text-xl font-bold text-blue-400 mt-1 leading-tight">--</div>
+          <div id="phaseDesc" class="text-xs text-slate-400 mt-2"></div>
+        </div>
+        <div id="ladderSteps" class="space-y-1.5"></div>
+        <div class="mt-4 pt-3 border-t border-slate-700">
+          <div class="text-[10px] text-slate-500 uppercase tracking-wider mb-2">DCA Progress (This Month)</div>
+          <div id="dcaTracker" class="flex items-center gap-3">
+            <div class="progress-track flex-1" style="height:10px"><div id="dcaFill" class="progress-fill bg-blue-500" style="width:0%"></div></div>
+            <span id="dcaPct" class="text-sm font-bold text-slate-300 w-16 text-right">0%</span>
+          </div>
+        </div>
+        <div class="mt-4 p-3 rounded-lg bg-blue-900/20 border border-blue-800/30">
+          <div class="text-[10px] text-blue-400 uppercase tracking-wider mb-1">Recommended Action</div>
+          <div id="recommendedAction" class="text-sm text-white font-medium leading-snug">--</div>
+        </div>
+      </div>
+
+      <!-- Rule Engine -->
+      <div class="card p-5 lg:col-span-2 has-tip" data-tip="ruleEngine">
+        <h2 class="text-sm font-semibold text-slate-300 mb-4">Rule Engine</h2>
+        <div id="ruleChecks" class="space-y-3"></div>
+      </div>
+    </div>
+
+    <!-- Row 4: Asset Watchlist -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">Asset Watchlist</h2>
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-11 gap-3" id="etfCards"></div>
+      <div class="mt-2">
+        <button onclick="openEtfInput()" class="text-xs text-blue-400 hover:text-blue-300">+ Update prices manually</button>
+      </div>
+    </section>
+
+    <!-- Row 5: Allocation Target -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">Bucket B Target Allocation</h2>
+      <div class="card p-4 has-tip" data-tip="allocation">
+        <div id="allocationBars" class="space-y-2"></div>
+      </div>
+    </section>
+
+    <!-- Row 6: Charts -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">Time-Series</h2>
+      <div class="flex gap-2 mb-3 border-b border-slate-700 pb-2" id="chartTabs">
+        <button onclick="switchChart('rates')" class="pb-1 tab-active text-sm" data-tab="rates">Rates</button>
+        <button onclick="switchChart('forex')" class="pb-1 tab-inactive text-sm" data-tab="forex">USD/JPY</button>
+        <button onclick="switchChart('etf')" class="pb-1 tab-inactive text-sm" data-tab="etf">ETF/Assets</button>
+        <button onclick="switchChart('risk')" class="pb-1 tab-inactive text-sm" data-tab="risk">VIX & CPI</button>
+      </div>
+      <div class="card p-4" style="height: 350px;">
+        <canvas id="timeSeriesChart"></canvas>
+      </div>
+    </section>
+
+    <!-- Row 7: Snapshot History -->
+    <section>
+      <h2 class="text-sm font-semibold text-slate-400 mb-2 uppercase tracking-wider">Snapshot History</h2>
+      <div class="card overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead class="text-slate-400 border-b border-slate-700"><tr id="historyHeader"></tr></thead>
+          <tbody id="historyBody" class="text-slate-300"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ETF Modal -->
+  <div id="etfModal" class="hidden fixed inset-0 modal-overlay flex items-center justify-center z-50">
+    <div class="card p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto">
+      <h3 class="text-sm font-semibold mb-3">Update Asset Prices</h3>
+      <div id="etfInputs" class="space-y-2"></div>
+      <div class="flex gap-2 mt-4">
+        <button onclick="saveEtfPrices()" class="btn-primary text-sm">Save</button>
+        <button onclick="closeEtfInput()" class="btn-secondary text-sm">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tooltip Panel (single reusable element) -->
+  <div id="tipPanel" class="tip-panel">
+    <span class="tip-close" onclick="closeTip()">&times;</span>
+    <div id="tipContent"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
